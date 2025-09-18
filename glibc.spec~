@@ -972,7 +972,7 @@ export STRIP_KEEP_SYMTAB=*.so*
 
 # Install base glibc
 make %{?_smp_mflags} %{?make_output_sync} install_root=%{buildroot} install -C cc-base
-
+mkdir -p %{buildroot}/usr/lib64;ln -s %{buildroot}/usr/lib64 %{buildroot}/usr/lib
 # Install locales
 %if %{build_locales}
 	cd cc-base
