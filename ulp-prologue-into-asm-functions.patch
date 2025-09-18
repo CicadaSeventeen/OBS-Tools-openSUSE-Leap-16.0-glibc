@@ -1,0 +1,367 @@
+From 14848b3c532520e71ba2614eb23f173f83c541d2 Mon Sep 17 00:00:00 2001
+From: Giuliano Belinassi <gbelinassi@suse.de>
+Date: Thu, 2 Jan 2025 22:40:22 +0100
+Subject: [PATCH] Add Userspace Livepatch prologue into ASM functions
+
+Userspace Live Patching (ULP) refers to the process of applying
+patches to the libraries used by a running process, without
+interrupting it. In order to archive this, functions must have
+the NOP prologue. This prologue is included automatically when
+compiled with -fpatchable-function-entry, but for ASM functions
+this have to be included manually. This patch does this.
+
+Signed-off-by: Giuliano Belinassi <gbelinassi@suse.de>
+---
+ config.h.in                              |  3 ++
+ config.make.in                           |  1 +
+ configure                                | 22 ++++++++++
+ configure.ac                             | 13 ++++++
+ sysdeps/powerpc/powerpc64/le/Makefile    |  5 +++
+ sysdeps/powerpc/powerpc64/sysdep.h       | 55 ++++++++++++++++++++++--
+ sysdeps/x86_64/Makefile                  |  5 +++
+ sysdeps/x86_64/multiarch/strcmp-avx2.S   |  5 +--
+ sysdeps/x86_64/multiarch/strcmp-evex.S   |  5 +--
+ sysdeps/x86_64/multiarch/strcmp-sse4_2.S |  5 +--
+ sysdeps/x86_64/sysdep.h                  | 54 +++++++++++++++++++++--
+ 11 files changed, 153 insertions(+), 20 deletions(-)
+
+diff --git a/config.h.in b/config.h.in
+index f495f11244..6c46990c8d 100644
+--- a/config.h.in
++++ b/config.h.in
+@@ -214,6 +214,9 @@
+ /* Define to 1 if libpthread actually resides in libc.  */
+ #define PTHREAD_IN_LIBC 0
+ 
++/* Define to 1 if support for userspace livepatching is enabled.  */
++#define ENABLE_USERSPACE_LIVEPATCH 0
++
+ /* An integer used to scale the timeout of test programs.  */
+ #define TIMEOUTFACTOR 1
+ 
+diff --git a/config.make.in b/config.make.in
+index 36096881b7..04cf873fad 100644
+--- a/config.make.in
++++ b/config.make.in
+@@ -81,6 +81,7 @@ mach-interface-list = @mach_interface_list@
+ memory-tagging = @memory_tagging@
+ 
+ # Configuration options.
++enable-userspace-livepatch = @enable_userspace_livepatch@
+ build-shared = @shared@
+ build-profile = @profile@
+ build-static-nss = @static_nss@
+diff --git a/configure b/configure
+index 1d543548cd..f6275d327e 100755
+--- a/configure
++++ b/configure
+@@ -615,6 +615,7 @@ LIBOBJS
+ pthread_in_libc
+ RELEASE
+ VERSION
++enable_userspace_livepatch
+ mach_interface_list
+ DEFINES
+ static_nss
+@@ -809,6 +810,7 @@ enable_cet
+ enable_scv
+ enable_fortify_source
+ with_cpu
++enable_userspace_livepatch
+ '
+       ac_precious_vars='build_alias
+ host_alias
+@@ -1491,6 +1493,8 @@ Optional Features:
+                           Use -D_FORTIFY_SOURCE=[1|2|3] to control code
+                           hardening, defaults to highest possible value
+                           supported by the build compiler.
++  --enable-userspace-livepatch
++                          build with userspace livepatch support [default=no]
+ 
+ Optional Packages:
+   --with-PACKAGE[=ARG]    use PACKAGE [ARG=yes]
+@@ -8096,6 +8100,24 @@ libc_cv_multidir=`${CC-cc} $CFLAGS $CPPFLAGS -print-multi-directory`
+ 
+ 
+ 
++# Check whether --enable-userspace-livepatch was given.
++if test ${enable_userspace_livepatch+y}
++then :
++  enableval=$enable_userspace_livepatch; enable_userspace_livepatch=$enableval
++else case e in #(
++  e) enable_userspace_livepatch=no ;;
++esac
++fi
++
++
++# Libpulp uses -fpatchable-function-entry to add padding NOPS to the
++# prologue of all functions.
++if test "x$enable_userspace_livepatch" = xyes; then
++  printf "%s\n" "#define ENABLE_USERSPACE_LIVEPATCH 1" >>confdefs.h
++
++fi
++
++
+ VERSION=`sed -n -e 's/^#define VERSION "\([^"]*\)"/\1/p' < $srcdir/version.h`
+ RELEASE=`sed -n -e 's/^#define RELEASE "\([^"]*\)"/\1/p' < $srcdir/version.h`
+ 
+diff --git a/configure.ac b/configure.ac
+index 9cbc0bf68f..4ba19209b7 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -1780,6 +1780,19 @@ AC_SUBST(DEFINES)
+ dnl See sysdeps/mach/configure.ac for this variable.
+ AC_SUBST(mach_interface_list)
+ 
++AC_ARG_ENABLE([userspace-livepatch],
++	      AS_HELP_STRING([--enable-userspace-livepatch],
++			     [build with userspace livepatch support @<:@default=no@:>@]),
++	      [enable_userspace_livepatch=$enableval],
++	      [enable_userspace_livepatch=no])
++
++# Libpulp uses -fpatchable-function-entry to add padding NOPS to the
++# prologue of all functions.
++if test "x$enable_userspace_livepatch" = xyes; then
++  AC_DEFINE(ENABLE_USERSPACE_LIVEPATCH)
++fi
++AC_SUBST(enable_userspace_livepatch)
++
+ VERSION=`sed -n -e 's/^#define VERSION "\([^"]*\)"/\1/p' < $srcdir/version.h`
+ RELEASE=`sed -n -e 's/^#define RELEASE "\([^"]*\)"/\1/p' < $srcdir/version.h`
+ AC_SUBST(VERSION)
+diff --git a/sysdeps/powerpc/powerpc64/le/Makefile b/sysdeps/powerpc/powerpc64/le/Makefile
+index b77775cf95..2f81e562db 100644
+--- a/sysdeps/powerpc/powerpc64/le/Makefile
++++ b/sysdeps/powerpc/powerpc64/le/Makefile
+@@ -1,3 +1,8 @@
++# Add flags for Userspace Livepatching support.
++ifeq (yes,$(enable-userspace-livepatch))
+++cflags += -fpatchable-function-entry=14,13 -msplit-patch-nops
++endif
++
+ # When building float128 we need to ensure -mfloat128 is
+ # passed to all such object files.
+ type-float128-CFLAGS := -mfloat128
+diff --git a/sysdeps/powerpc/powerpc64/sysdep.h b/sysdeps/powerpc/powerpc64/sysdep.h
+index c363939e1a..33ed236407 100644
+--- a/sysdeps/powerpc/powerpc64/sysdep.h
++++ b/sysdeps/powerpc/powerpc64/sysdep.h
+@@ -162,6 +162,46 @@
+ BODY_LABEL(\name):
+ 	.endm
+ 
++/* Libpulp uses -fpatchable-function-entry to add padding NOPS to the
++   prologue of all functions. This works for C functions. For functions
++   written in ASM, the way we do this is by adding this prologue manually.  */
++
++#if ENABLE_USERSPACE_LIVEPATCH
++
++/* Instructions to be inserted before the function label.  */
++# define ULP_NOPS_PRE_PROLOGUE     .rept 13; nop; .endr
++
++/* Instruction to be inserted after the function label.  */
++# define ULP_NOPS_POST_PROLOGUE    .rept  1; nop; .endr
++
++
++/* this macro expands according to the following condition:
++ * if name = _start, then the prologue is not inserted.
++ * if name = _dl_relocate_static_pie, then the prologue is not inserted.
++ * if name = anything else, then the prologue is inserted.
++ **/
++# define __ULP_PRE_PROLOGUE_dl_relocate_static_pie    ,
++# define __ULP_PRE_PROLOGUE_start                     ,
++# define __ULP_PRE_PROLOGUE(x, y,...)                 y
++# define _ULP_PRE_PROLOGUE(x, ...)                    __ULP_PRE_PROLOGUE(x, __VA_ARGS__)
++# define ULP_PRE_PROLOGUE(name)                       _ULP_PRE_PROLOGUE(__ULP_PRE_PROLOGUE##name, ULP_NOPS_PRE_PROLOGUE,)
++
++/* this macro expands according to the following condition:
++ * if name = _start, then the postlogue is not inserted.
++ * if name = _dl_relocate_static_pie, then the postlogue is not inserted.
++ * if name = anything else, then the postlogue is inserted.
++ **/
++# define __ULP_POST_PROLOGUE_dl_relocate_static_pie   ,
++# define __ULP_POST_PROLOGUE_start                    ,
++# define __ULP_POST_PROLOGUE(x, y,...)                y
++# define _ULP_POST_PROLOGUE(x, ...)                   __ULP_POST_PROLOGUE(x, __VA_ARGS__)
++# define ULP_POST_PROLOGUE(name)                      _ULP_POST_PROLOGUE(__ULP_POST_PROLOGUE##name, ULP_NOPS_POST_PROLOGUE,)
++
++#else
++# define ULP_PRE_PROLOGUE(name)
++# define ULP_POST_PROLOGUE(name)
++#endif
++
+ /* Use ENTRY_TOCLESS for functions that make no use of r2 and
+    guarantee r2 is unchanged on exit.  Any function that has @toc or
+    @got relocs uses r2.  Functions that call other functions via the
+@@ -174,19 +214,26 @@ BODY_LABEL(\name):
+    before the start of the function's code.   */
+ #ifndef PROF
+ #define ENTRY_TOCLESS(name, ...)		\
++	ULP_PRE_PROLOGUE(name);			\
+ 	ENTRY_3 name, ## __VA_ARGS__;		\
+-	cfi_startproc
++	cfi_startproc;				\
++	ULP_POST_PROLOGUE(name)
+ 
+ #define ENTRY(name, ...)			\
+-	ENTRY_TOCLESS(name, ## __VA_ARGS__);	\
+-	LOCALENTRY(name)
++	ULP_PRE_PROLOGUE(name);			\
++	ENTRY_3 name, ## __VA_ARGS__;		\
++	cfi_startproc;				\
++	LOCALENTRY(name);			\
++	ULP_POST_PROLOGUE(name)
+ #else
+ /* The call to _mcount is potentially via the plt, so profiling code
+    is never free of an r2 use.  */
+ #define ENTRY_TOCLESS(name, ...)		\
++	ULP_PRE_PROLOGUE(name);			\
+ 	ENTRY_3 name, ## __VA_ARGS__;		\
+ 	cfi_startproc;				\
+-	LOCALENTRY(name)
++	LOCALENTRY(name);                       \
++	ULP_POST_PROLOGUE(name)
+ 
+ #define ENTRY(name, ...)			\
+ 	ENTRY_TOCLESS(name, ## __VA_ARGS__)
+diff --git a/sysdeps/x86_64/Makefile b/sysdeps/x86_64/Makefile
+index ce949dba27..44e9f38f4e 100644
+--- a/sysdeps/x86_64/Makefile
++++ b/sysdeps/x86_64/Makefile
+@@ -1,3 +1,8 @@
++# Add flags for Userspace Livepatching support.
++ifeq (yes,$(enable-userspace-livepatch))
+++cflags += -fpatchable-function-entry=16,14
++endif
++
+ # The i387 `long double' is a distinct type we support.
+ long-double-fcts = yes
+ 
+diff --git a/sysdeps/x86_64/multiarch/strcmp-avx2.S b/sysdeps/x86_64/multiarch/strcmp-avx2.S
+index 5bc1d90078..3ea96c0aa3 100644
+--- a/sysdeps/x86_64/multiarch/strcmp-avx2.S
++++ b/sysdeps/x86_64/multiarch/strcmp-avx2.S
+@@ -201,10 +201,7 @@ END (STRCASECMP)
+ # endif
+ 
+ 	.p2align 4
+-STRCMP:
+-	cfi_startproc
+-	_CET_ENDBR
+-	CALL_MCOUNT
++FUNCTION_START(STRCMP)
+ 
+ # if defined USE_AS_STRCASECMP_L
+ 	/* We have to fall back on the C implementation for locales with
+diff --git a/sysdeps/x86_64/multiarch/strcmp-evex.S b/sysdeps/x86_64/multiarch/strcmp-evex.S
+index 06730ab2a1..d96b1c4824 100644
+--- a/sysdeps/x86_64/multiarch/strcmp-evex.S
++++ b/sysdeps/x86_64/multiarch/strcmp-evex.S
+@@ -224,10 +224,7 @@ END (STRCASECMP)
+ # endif
+ 
+ 	.p2align 4
+-STRCMP:
+-	cfi_startproc
+-	_CET_ENDBR
+-	CALL_MCOUNT
++FUNCTION_START(STRCMP)
+ 
+ # if defined USE_AS_STRCASECMP_L
+ 	/* We have to fall back on the C implementation for locales with
+diff --git a/sysdeps/x86_64/multiarch/strcmp-sse4_2.S b/sysdeps/x86_64/multiarch/strcmp-sse4_2.S
+index 4e98da0246..2a2280c65f 100644
+--- a/sysdeps/x86_64/multiarch/strcmp-sse4_2.S
++++ b/sysdeps/x86_64/multiarch/strcmp-sse4_2.S
+@@ -103,10 +103,7 @@ END (STRCASECMP)
+ 
+ # define arg arg
+ 
+-STRCMP:
+-	cfi_startproc
+-	_CET_ENDBR
+-	CALL_MCOUNT
++FUNCTION_START(STRCMP)
+ 
+ /*
+  * This implementation uses SSE to compare up to 16 bytes at a time.
+diff --git a/sysdeps/x86_64/sysdep.h b/sysdeps/x86_64/sysdep.h
+index db6e36b2dd..86a5d1b2be 100644
+--- a/sysdeps/x86_64/sysdep.h
++++ b/sysdeps/x86_64/sysdep.h
+@@ -49,6 +49,46 @@ enum cf_protection_level
+ 
+ #ifdef	__ASSEMBLER__
+ 
++/* Libpulp uses -fpatchable-function-entry to add padding NOPS to the
++   prologue of all functions. This works for C functions. For functions
++   written in ASM, the way we do this is by adding this prologue manually.  */
++
++#if ENABLE_USERSPACE_LIVEPATCH
++
++/* Instructions to be inserted before the function label.  */
++# define ULP_NOPS_PRE_PROLOGUE     .rept 14; nop; .endr
++
++/* Instruction to be inserted after the function label.  */
++# define ULP_NOPS_POST_PROLOGUE    .rept  2; nop; .endr
++
++
++/* this macro expands according to the following condition:
++ * if name = _start, then the prologue is not inserted.
++ * if name = _dl_relocate_static_pie, then the prologue is not inserted.
++ * if name = anything else, then the prologue is inserted.
++ **/
++# define __ULP_POST_PROLOGUE_dl_relocate_static_pie   ,
++# define __ULP_PRE_PROLOGUE_start                     ,
++# define __ULP_PRE_PROLOGUE(x, y,...)                 y
++# define _ULP_PRE_PROLOGUE(x, ...)                    __ULP_PRE_PROLOGUE(x, __VA_ARGS__)
++# define ULP_PRE_PROLOGUE(name)                       _ULP_PRE_PROLOGUE(__ULP_PRE_PROLOGUE##name, ULP_NOPS_PRE_PROLOGUE,)
++
++/* this macro expands according to the following condition:
++ * if name = _start, then the postlogue is not inserted.
++ * if name = _dl_relocate_static_pie, then the postlogue is not inserted.
++ * if name = anything else, then the postlogue is inserted.
++ **/
++# define __ULP_POST_PROLOGUE_dl_relocate_static_pie   ,
++# define __ULP_POST_PROLOGUE_start                    ,
++# define __ULP_POST_PROLOGUE(x, y,...)                y
++# define _ULP_POST_PROLOGUE(x, ...)                   __ULP_POST_PROLOGUE(x, __VA_ARGS__)
++# define ULP_POST_PROLOGUE(name)                      _ULP_POST_PROLOGUE(__ULP_POST_PROLOGUE##name, ULP_NOPS_POST_PROLOGUE,)
++
++#else
++# define ULP_PRE_PROLOGUE(name)
++# define ULP_POST_PROLOGUE(name)
++#endif
++
+ /* Syntactic details of assembler.  */
+ 
+ #ifdef _CET_ENDBR
+@@ -58,15 +98,21 @@ enum cf_protection_level
+ # define _CET_NOTRACK
+ #endif
+ 
++/* Define the first instructions of a function.  */
++#define FUNCTION_START(name)						      \
++  ULP_PRE_PROLOGUE(name);							      \
++  C_LABEL(name);							      \
++  cfi_startproc;							      \
++  _CET_ENDBR;								      \
++  ULP_POST_PROLOGUE(name);							      \
++  CALL_MCOUNT;
++
+ /* Define an entry point visible from C.  */
+ #define	ENTRY_P2ALIGN(name, alignment)					      \
+   .globl C_SYMBOL_NAME(name);						      \
+   .type C_SYMBOL_NAME(name),@function;					      \
+   .align ALIGNARG(alignment);						      \
+-  C_LABEL(name)								      \
+-  cfi_startproc;							      \
+-  _CET_ENDBR;								      \
+-  CALL_MCOUNT
++  FUNCTION_START(name)
+ 
+ /* This macro is for setting proper CFI with DW_CFA_expression describing
+    the register as saved relative to %rsp instead of relative to the CFA.
+-- 
+2.49.0
+
